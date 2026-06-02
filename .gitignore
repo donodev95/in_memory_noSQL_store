@@ -1,0 +1,72 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+tempCodeRunnerFile.cpp
+
+# Build directories
+build/
+cmake-build-*/
+out/
+bin/
+obj/
+Debug/
+Release/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+
+# Make/autotools generated files
+*.d
+*.mk
+Makefile.in
+aclocal.m4
+autom4te.cache/
+configure
+config.log
+config.status
+
+# C/C++ build artifacts
+*.o
+*.obj
+*.lo
+*.la
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+*.i
+*.ii
+*.s
+
+# Coverage and profiling
+*.gcda
+*.gcno
+*.gcov
+*.profraw
+*.profdata
+coverage/
+
+# Local executables in this project
+/client
+/server
+
+/kv_server
+src
+src/*
