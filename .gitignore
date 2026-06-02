@@ -68,5 +68,5 @@ coverage/
 /server
 
 /kv_server
-src
-src/*
+source
+source/*
