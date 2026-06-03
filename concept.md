@@ -1,6 +1,7 @@
 # Chapter 3 - Simple TCP Server - Client.
 ## Server:
 - A Simple TCP server-client, which allows 2 Nodes perform socket connections to transfer data.
+- The server accept 1 client connection and perform reading one message only.
 - Server performs:
     - Allocating Listening Socket (Fd 3).
     - Waiting for connection requests from client and accept it.
