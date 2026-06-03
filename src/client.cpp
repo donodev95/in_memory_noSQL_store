@@ -13,6 +13,8 @@
 namespace {
     const int kPort = 1234;
     const std::size_t kBufferSize = 64;
+    const std::size_t kMaxMessageSize = 4096;
+    const std::size_t kHeaderSize = 4;
 
     Socket createClientSocket () {
         Socket clientSocket{::socket(AF_INET, SOCK_STREAM, 0)};
@@ -59,13 +61,68 @@ namespace {
             static_cast<std::size_t>(byteReads)
         };
     }
+
+    int query(int fd, std::string_view message) {
+        if (message.size() > kMaxMessageSize) {
+            logMessage("Message too long");
+            return -1;
+        }
+        const uint32_t messageLength = message.size();
+
+        std::array<char, kHeaderSize + kMaxMessageSize> writeBuffer{};
+        std::memcpy(writeBuffer.data(), &messageLength, kHeaderSize);
+        std::memcpy(writeBuffer.data() + kHeaderSize, message.data(), messageLength);
+
+        if(writeAll(fd, writeBuffer.data(), kHeaderSize + message.size()) < 0) {
+            logMessage("write() error");
+            return -1;
+        }
+
+        std::array<char, kHeaderSize + kMaxMessageSize> readBuffer{};
+        uint32_t responseLength = 0;
+        if (readFull(fd, readBuffer.data(), kHeaderSize) < 0) {
+            logMessage(errno == 0 ? "EOF" : "read() error");
+            return -1;
+        }
+        // update the responseLength with message length from header.
+        std::memcpy(&responseLength, readBuffer.data(), kHeaderSize); 
+
+        if (responseLength > kMaxMessageSize) {
+            logMessage("response too long");
+            return -1;
+        }
+
+        if (readFull(fd, readBuffer.data() + kHeaderSize, responseLength) < 0) {
+        logMessage("read() error");
+        return -1;
+        }
+
+        std::string_view response{
+            readBuffer.data() + kHeaderSize,
+            responseLength
+        };
+
+        std::cout << "Server: " << response << '\n';
+
+        return 0;
+    };
 }
 int main() {
     Socket clientSocket = createClientSocket();
     connectToServer(clientSocket.get());
-    const std::string_view message = "hello";
-    sendMessage(clientSocket.get(), message);
-    const std::string response = readResponse(clientSocket.get());
-    std::cout << "Server:" << response << "\n";
+    if (query(clientSocket.get(), "hello1") < 0) {
+        return 1;
+    }
+
+    if (query(clientSocket.get(), "hello2") < 0) {
+        return 1;
+    }
+
+    if (query(clientSocket.get(), "hello3") < 0) {
+        return 1;
+    }
+    if (query(clientSocket.get(), "hello4") < 0) {
+        return 1;
+    }
     return 0;
 }

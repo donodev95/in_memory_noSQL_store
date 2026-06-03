@@ -1,7 +1,3 @@
-/* 
-
-*/
-
 #include <iostream>
 #include <cerrno>
 
@@ -18,6 +14,7 @@ namespace {
     const int kPort = 1234;
     const int kBacklog = SOMAXCONN;
     const size_t kBufferSize = 64;
+    const std::size_t kMaxMessageSize = 4096;
 
     Socket createSocketServer() {
         Socket serverSocket{socket(AF_INET, SOCK_STREAM, 0)}; // Instantiate serverSocket with IPv4 protocol, and TCP type.
@@ -79,27 +76,48 @@ namespace {
         return Socket{clientFd};
     }
     
-    void handleClient(int clientFd) {
-        std::array<char, kBufferSize> readBuffer{};
-    
-        const ssize_t byteRead = read(
-            clientFd,
-            readBuffer.data(),
-            readBuffer.size() - 1
-        );
-        if(byteRead < 0) {
-            logMessage("read() Error");
-            return;
+    int handleOneRequest(int clientFd) {
+        // Reserve [4 bytes header][4096 bytes message body]
+        std::array<char, kMaxMessageSize + 4> readBuffer{}; 
+        // Read the header
+        if (readFull(clientFd, readBuffer.data(), 4) < 0) { 
+            logMessage(errno == 0 ? "EOF" : "read() error");
+            return -1;
         }
-        readBuffer[static_cast<std::size_t>(byteRead)] = '\0'; // Add null pointer at the end of the message (len message index)
-        std::cerr << "Client: " << readBuffer.data() << "\n";
-        const std::string_view response = "world";
-        const size_t bytesWritten = write(
+
+        uint32_t messageLength = 0;
+        // Copy msg size in header from readBuffer to messageLength
+        std::memcpy(&messageLength, readBuffer.data(), 4); 
+
+        if (messageLength > kMaxMessageSize) {
+            logMessage("Message too long");
+            return -1;
+        }
+        // Read the message body.
+        if (readFull(clientFd, readBuffer.data(), messageLength) < 0) { // 
+            logMessage("read() error");
+            return -1;
+        }
+        /* 
+        Print the client message. readBuffer.data() returns the pointer to the first byte in the message.
+        +4 to skip the first 4 header bytes.
+        */
+        std::string_view message{readBuffer.data() + 4, messageLength};
+        std::cerr << "Client: " <<message << "\n";
+        // Generate Response
+        std::string response{"received - "};
+        response += message;
+        // Generate Write Buffer.
+        std::array<char, 4 + 64> writeBuffer{};
+        uint32_t responseLength = response.size();
+        
+        std::memcpy(writeBuffer.data(), &responseLength, 4);
+        std::memcpy(writeBuffer.data() + 4, response.data(), response.size());
+        return writeAll(
             clientFd,
-            response.data(),
-            response.size()
+            writeBuffer.data(),
+            4 + response.size()
         );
-        if (bytesWritten < 0) logMessage("write() error");
     }
 }
 
@@ -110,7 +128,10 @@ int main() {
     while (true)
     {
         Socket clientSocket = acceptClient(serverSocket.get());
-        handleClient(clientSocket.get());
+         while(true) {
+            const int result = handleOneRequest(clientSocket.get());
+            if (result < 0) break;
+        }
     }
     
     return 0;
