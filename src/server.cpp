@@ -1,3 +1,7 @@
+/* 
+
+*/
+
 #include <iostream>
 #include <cerrno>
 
@@ -47,57 +51,58 @@ namespace {
     
         return serverSocket;
     }
-}
-
-Socket acceptClient(int serverFd) {
-    sockaddr_in clientAddress = {};
-    socklen_t clientAddressLength = sizeof(clientAddress); 
-    // Tell accept how big of the buffer for client address is. Accept the client request and create a new socket for that client.
-    const int clientFd = accept( 
-        serverFd,
-        reinterpret_cast<sockaddr*>(&clientAddress),
-        &clientAddressLength
-    );
-    if(clientFd < 0) throwSystemError("accept()");
-
-    char ipAddress[INET_ADDRSTRLEN]{}; // Create a string buffer for IP address. 
-    if (::inet_ntop( // Convert from binary to human readable string.
-            AF_INET,
-            &clientAddress.sin_addr,
-            ipAddress,
-            sizeof(ipAddress)
-        ) != nullptr) {
-        std::cout << "New client from "
-                  << ipAddress
-                  << ':'
-                  << ntohs(clientAddress.sin_port)
-                  << '\n';
+    
+    Socket acceptClient(int serverFd) {
+        sockaddr_in clientAddress = {};
+        socklen_t clientAddressLength = sizeof(clientAddress); 
+        // Tell accept how big of the buffer for client address is. Accept the client request and create a new socket for that client.
+        const int clientFd = accept( 
+            serverFd,
+            reinterpret_cast<sockaddr*>(&clientAddress),
+            &clientAddressLength
+        );
+        if(clientFd < 0) throwSystemError("accept()");
+    
+        char ipAddress[INET_ADDRSTRLEN]{}; // Create a string buffer for IP address. 
+        if (::inet_ntop( // Convert from binary to human readable string.
+                AF_INET,
+                &clientAddress.sin_addr,
+                ipAddress,
+                sizeof(ipAddress)
+            ) != nullptr) {
+            std::cout << "New client from "
+                      << ipAddress
+                      << ':'
+                      << ntohs(clientAddress.sin_port)
+                      << '\n';
+        }
+        return Socket{clientFd};
     }
-    return Socket{clientFd};
-}
-
-void handleClient(int clientFd) {
-    std::array<char, kBufferSize> readBuffer{};
-
-    const ssize_t byteRead = read(
-        clientFd,
-        readBuffer.data(),
-        readBuffer.size() - 1
-    );
-    if(byteRead < 0) {
-        logMessage("read() Error");
-        return;
+    
+    void handleClient(int clientFd) {
+        std::array<char, kBufferSize> readBuffer{};
+    
+        const ssize_t byteRead = read(
+            clientFd,
+            readBuffer.data(),
+            readBuffer.size() - 1
+        );
+        if(byteRead < 0) {
+            logMessage("read() Error");
+            return;
+        }
+        readBuffer[static_cast<std::size_t>(byteRead)] = '\0'; // Add null pointer at the end of the message (len message index)
+        std::cerr << "Client: " << readBuffer.data() << "\n";
+        const std::string_view response = "world";
+        const size_t bytesWritten = write(
+            clientFd,
+            response.data(),
+            response.size()
+        );
+        if (bytesWritten < 0) logMessage("write() error");
     }
-    readBuffer[static_cast<std::size_t>(byteRead)] = '\0';
-    std::cerr << "Client: " << readBuffer.data() << "\n";
-    const std::string_view response = "world";
-    const size_t bytesWritten = write(
-        clientFd,
-        response.data(),
-        response.size()
-    );
-    if (bytesWritten < 0) logMessage("write() error");
 }
+
 
 int main() {
     Socket serverSocket = createSocketServer();
