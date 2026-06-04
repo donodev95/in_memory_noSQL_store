@@ -13,7 +13,7 @@
 namespace {
     const int kPort = 1234;
     const std::size_t kBufferSize = 64;
-    const std::size_t kMaxMessageSize = 4096;
+    const std::size_t kMaxMessageSize = 32 << 20; // left bitwise shift operator: - 32 MB ~ 33,554,432 z characters
     const std::size_t kHeaderSize = 4;
 
     Socket createClientSocket () {
@@ -39,90 +39,117 @@ namespace {
 
     }
 
-    void sendMessage(int ClientFd, std::string_view message) {
-        const ssize_t byteWritten = ::write(
-            ClientFd,
-            message.data(),
-            message.size()
-        );
-        if (byteWritten < 0) throwSystemError("write()");
+    static void appendBuffer(
+        std::vector<uint8_t> &buffer,
+        const uint8_t *data,
+        size_t length
+    ) {
+        buffer.insert(buffer.end(), data, data + length);
     }
 
-    std::string readResponse(int clientFd) {
-        std::array<char, kBufferSize> readBuffer{};
-        const ssize_t byteReads = ::read(
-            clientFd,
-            readBuffer.data(),
-            readBuffer.size() - 1
-        );
-        if (byteReads < 0) throwSystemError("read()");
-        return std::string {
-            readBuffer.data(),
-            static_cast<std::size_t>(byteReads)
-        };
-    }
-
-    int query(int fd, std::string_view message) {
-        if (message.size() > kMaxMessageSize) {
+    static int32_t sendRequest(int fd, const std::string &text) {
+        if (text.size() > kMaxMessageSize) {
             logMessage("Message too long");
             return -1;
         }
-        const uint32_t messageLength = message.size();
 
-        std::array<char, kHeaderSize + kMaxMessageSize> writeBuffer{};
-        std::memcpy(writeBuffer.data(), &messageLength, kHeaderSize);
-        std::memcpy(writeBuffer.data() + kHeaderSize, message.data(), messageLength);
+        uint32_t length = static_cast<uint32_t>(text.size());
+        uint32_t rawHeaderLength = htonl(length);
 
-        if(writeAll(fd, writeBuffer.data(), kHeaderSize + message.size()) < 0) {
-            logMessage("write() error");
-            return -1;
-        }
+        /* Generate message */
+        std::vector<uint8_t> writeBuffer;
+        // Write Message Header
+        appendBuffer(
+            writeBuffer,
+            reinterpret_cast<const uint8_t *>(&rawHeaderLength),
+            4
+        );
+        // Write Message Body
+        appendBuffer(
+            writeBuffer,
+            reinterpret_cast<const uint8_t *>(text.data()),
+            text.size()
+        );
 
-        std::array<char, kHeaderSize + kMaxMessageSize> readBuffer{};
-        uint32_t responseLength = 0;
-        if (readFull(fd, readBuffer.data(), kHeaderSize) < 0) {
+        return writeAll(fd, writeBuffer.data(), writeBuffer.size());
+    }
+    static int32_t readResponse(int fd) {
+        std::vector<uint8_t> readBuffer(kHeaderSize);
+
+        errno = 0;
+
+        int32_t error = readFull(
+            fd,
+            readBuffer.data(),
+            kHeaderSize
+        );
+
+        if (error != 0) {
             logMessage(errno == 0 ? "EOF" : "read() error");
-            return -1;
+            return error;
         }
-        // update the responseLength with message length from header.
-        std::memcpy(&responseLength, readBuffer.data(), kHeaderSize); 
+
+        uint32_t encodedLength = 0;
+
+        std::memcpy(
+            &encodedLength,
+            readBuffer.data(),
+            kHeaderSize
+        );
+
+        const uint32_t responseLength = ntohl(encodedLength);
 
         if (responseLength > kMaxMessageSize) {
             logMessage("response too long");
             return -1;
         }
 
-        if (readFull(fd, readBuffer.data() + kHeaderSize, responseLength) < 0) {
-        logMessage("read() error");
-        return -1;
+        readBuffer.resize(kHeaderSize + responseLength);
+
+        error = readFull(
+            fd,
+            readBuffer.data() + kHeaderSize,
+            responseLength
+        );
+
+        if (error != 0) {
+            logMessage("read() error");
+            return error;
         }
 
-        std::string_view response{
-            readBuffer.data() + kHeaderSize,
+        const std::string_view responseBody{
+            reinterpret_cast<const char*>(readBuffer.data() + kHeaderSize),
             responseLength
         };
 
-        std::cout << "Server: " << response << '\n';
+        std::cout << "Server response length: "
+                << responseLength
+                << ", data: "
+                << responseBody.substr(0, 100)
+                << '\n';
 
         return 0;
-    };
+    }
 }
 int main() {
     Socket clientSocket = createClientSocket();
     connectToServer(clientSocket.get());
-    if (query(clientSocket.get(), "hello1") < 0) {
-        return 1;
+    std::vector<std::string> requests = {
+        "hello1",
+        "hello2",
+        "hello3",
+        // std::string(kMaxMsg, 'z'), // Create a kMaxMesg string of character z
+        "hello5"
+    };
+    for (const std::string &request: requests) {
+        if (sendRequest(clientSocket.get(), request) != 0) {
+            return 1;
+        }
     }
-
-    if (query(clientSocket.get(), "hello2") < 0) {
-        return 1;
-    }
-
-    if (query(clientSocket.get(), "hello3") < 0) {
-        return 1;
-    }
-    if (query(clientSocket.get(), "hello4") < 0) {
-        return 1;
+    for (size_t i = 0; i < requests.size(); ++i) {
+        if(readResponse(clientSocket.get()) != 0) {
+            return 1;
+        }
     }
     return 0;
 }
