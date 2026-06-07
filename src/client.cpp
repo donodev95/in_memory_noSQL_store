@@ -1,25 +1,38 @@
-#include <iostream>
+#include <array>
 #include <cerrno>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+#include <string>
+#include <string_view>
+#include <vector>
 
-#include <sys/socket.h>
-#include <unistd.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
-
-#include "utils.hpp"
 #include "socket.hpp"
+#include "utils.hpp"
 
 namespace {
-    const int kPort = 1234;
-    const std::size_t kBufferSize = 64;
-    const std::size_t kMaxMessageSize = 32 << 20; // left bitwise shift operator: - 32 MB ~ 33,554,432 z characters
-    const std::size_t kHeaderSize = 4;
+    constexpr int kPort = 1234;
+    constexpr std::size_t kMaxMessageSize = 32 << 20;
+    constexpr std::size_t kHeaderSize = 4;
 
-    Socket createClientSocket () {
+    enum class ResponseStatus : uint32_t {
+        Ok = 0,
+        Error = 1,
+        NotFound = 2
+    };
+
+    Socket createClientSocket() {
         Socket clientSocket{::socket(AF_INET, SOCK_STREAM, 0)};
 
-        if (!clientSocket.valid()) throwSystemError("socket()");
+        if (!clientSocket.valid()) {
+            throwSystemError("socket()");
+        }
+
         return clientSocket;
     }
 
@@ -30,58 +43,90 @@ namespace {
         serverAddress.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
         if (::connect(
-            clientFd,
-            reinterpret_cast<const sockaddr*>(&serverAddress),
-            sizeof(serverAddress)
-        ) < 0) {
+                clientFd,
+                reinterpret_cast<const sockaddr*>(&serverAddress),
+                sizeof(serverAddress)
+            ) < 0) {
             throwSystemError("connect()");
         }
-
     }
 
-    static void appendBuffer(
-        std::vector<uint8_t> &buffer,
-        const uint8_t *data,
-        size_t length
+    void appendBuffer(
+        std::vector<uint8_t>& buffer,
+        const uint8_t* data,
+        std::size_t length
     ) {
         buffer.insert(buffer.end(), data, data + length);
     }
 
-    static int32_t sendRequest(int fd, const std::string &text) {
-        if (text.size() > kMaxMessageSize) {
-            logMessage("Message too long");
+    void appendUint32(std::vector<uint8_t>& buffer, uint32_t value) {
+        const uint32_t encodedValue = htonl(value);
+
+        appendBuffer(
+            buffer,
+            reinterpret_cast<const uint8_t*>(&encodedValue),
+            kHeaderSize
+        );
+    }
+
+    int32_t sendRequest(
+        int fd,
+        const std::vector<std::string>& command
+    ) {
+        std::vector<uint8_t> body;
+
+        appendUint32(
+            body,
+            static_cast<uint32_t>(command.size())
+        );
+
+        for (const std::string& argument : command) {
+            appendUint32(
+                body,
+                static_cast<uint32_t>(argument.size())
+            );
+
+            appendBuffer(
+                body,
+                reinterpret_cast<const uint8_t*>(argument.data()),
+                argument.size()
+            );
+        }
+
+        if (body.size() > kMaxMessageSize) {
+            logMessage("message too long");
             return -1;
         }
 
-        uint32_t length = static_cast<uint32_t>(text.size());
-        uint32_t rawHeaderLength = htonl(length);
+        std::vector<uint8_t> request;
 
-        /* Generate message */
-        std::vector<uint8_t> writeBuffer;
-        // Write Message Header
-        appendBuffer(
-            writeBuffer,
-            reinterpret_cast<const uint8_t *>(&rawHeaderLength),
-            4
-        );
-        // Write Message Body
-        appendBuffer(
-            writeBuffer,
-            reinterpret_cast<const uint8_t *>(text.data()),
-            text.size()
+        appendUint32(
+            request,
+            static_cast<uint32_t>(body.size())
         );
 
-        return writeAll(fd, writeBuffer.data(), writeBuffer.size());
+        appendBuffer(
+            request,
+            body.data(),
+            body.size()
+        );
+
+        return writeAll(
+            fd,
+            request.data(),
+            request.size()
+        );
     }
-    static int32_t readResponse(int fd) {
-        std::vector<uint8_t> readBuffer(kHeaderSize);
+
+    int32_t readResponse(int fd) {
+        std::array<uint8_t, kHeaderSize> header{};
 
         errno = 0;
 
         int32_t error = readFull(
             fd,
-            readBuffer.data(),
-            kHeaderSize
+            header.data(),
+            header.size()
         );
 
         if (error != 0) {
@@ -89,27 +134,28 @@ namespace {
             return error;
         }
 
-        uint32_t encodedLength = 0;
+        uint32_t encodedResponseLength = 0;
 
         std::memcpy(
-            &encodedLength,
-            readBuffer.data(),
+            &encodedResponseLength,
+            header.data(),
             kHeaderSize
         );
 
-        const uint32_t responseLength = ntohl(encodedLength);
+        const uint32_t responseLength =
+            ntohl(encodedResponseLength);
 
         if (responseLength > kMaxMessageSize) {
             logMessage("response too long");
             return -1;
         }
 
-        readBuffer.resize(kHeaderSize + responseLength);
+        std::vector<uint8_t> response(responseLength);
 
         error = readFull(
             fd,
-            readBuffer.data() + kHeaderSize,
-            responseLength
+            response.data(),
+            response.size()
         );
 
         if (error != 0) {
@@ -117,39 +163,57 @@ namespace {
             return error;
         }
 
-        const std::string_view responseBody{
-            reinterpret_cast<const char*>(readBuffer.data() + kHeaderSize),
-            responseLength
+        if (response.size() < kHeaderSize) {
+            logMessage("bad response");
+            return -1;
+        }
+
+        uint32_t encodedStatus = 0;
+
+        std::memcpy(
+            &encodedStatus,
+            response.data(),
+            kHeaderSize
+        );
+
+        const auto status = static_cast<ResponseStatus>(
+            ntohl(encodedStatus)
+        );
+
+        const std::string_view data{
+            reinterpret_cast<const char*>(response.data() + kHeaderSize),
+            response.size() - kHeaderSize
         };
 
-        std::cout << "Server response length: "
-                << responseLength
-                << ", data: "
-                << responseBody.substr(0, 100)
-                << '\n';
+        std::cout << "status=" << static_cast<uint32_t>(status)
+                  << ", data=" << data
+                  << '\n';
 
         return 0;
     }
 }
+
 int main() {
     Socket clientSocket = createClientSocket();
+
     connectToServer(clientSocket.get());
-    std::vector<std::string> requests = {
-        "hello1",
-        "hello2",
-        "hello3",
-        // std::string(kMaxMsg, 'z'), // Create a kMaxMesg string of character z
-        "hello5"
+
+    const std::vector<std::vector<std::string>> requests{
+        {"set", "name", "dono"},
+        {"get", "name"},
+        {"del", "name"},
+        {"get", "name"}
     };
-    for (const std::string &request: requests) {
+
+    for (const auto& request : requests) {
         if (sendRequest(clientSocket.get(), request) != 0) {
             return 1;
         }
-    }
-    for (size_t i = 0; i < requests.size(); ++i) {
-        if(readResponse(clientSocket.get()) != 0) {
+
+        if (readResponse(clientSocket.get()) != 0) {
             return 1;
         }
     }
+
     return 0;
 }
