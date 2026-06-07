@@ -34,3 +34,7 @@ void hm_insert(HMap* hmap, HNode* node);
 HNode* hm_delete(HMap* hmap, HNode* key, HNodeEqual eq);
 void hm_clear(HMap* hmap);
 std::size_t hm_size(HMap* hmap);
+
+using HNodeCallback = bool (*)(HNode*, void*);
+
+void hm_foreach(HMap* hmap, HNodeCallback callback, void* arg);

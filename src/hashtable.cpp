@@ -132,3 +132,31 @@ void hm_clear(HMap* hmap) {
 std::size_t hm_size(HMap* hmap) {
     return hmap->newer.size + hmap->older.size;
 }
+
+void hm_foreach(HMap* hmap, HNodeCallback callback, void* arg) {
+    hmHelpRehashing(hmap);
+
+    auto foreachTable = [&](HTab* htab) -> bool {
+        if (!htab->tab) {
+            return true;
+        }
+
+        const std::size_t capacity = htab->mask + 1;
+
+        for (std::size_t i = 0; i < capacity; ++i) {
+            for (HNode* node = htab->tab[i]; node; node = node->next) {
+                if (!callback(node, arg)) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    };
+
+    if (!foreachTable(&hmap->newer)) {
+        return;
+    }
+
+    foreachTable(&hmap->older);
+}

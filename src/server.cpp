@@ -1,53 +1,27 @@
 /* 
-Chapter 8: Hashtables
-1. Why Hash Table:
-    Eg: Look up "apple." There are 2 popular data structure for a KV store.
-        - Sorting data structure like Trie, Treap, Tree, etc. (each node contains a value and left and right node.)
-            This type of data structure remains order and uses comparisions to narrow the search. O(log n) => 1.000.000 keys require around 20 comparisions.
-        - Hashtable: open addressing and chaining. => O(1)
-            - A Hash function primary job is to distribute indexes across buckets so collision stays low and look up remains close to O(1).
-            Eg: key = "name" with table size = 16 -> hash(name) = 123456. use 123456 % table size = 0 => index 0.
-            Eg: the indexes of apple, banana, orange = 1
-                - Open addresing:
-                    insert("apple") -> index 1.
-                    insert("banana") -> index 1 is occupied -> index 2
-                    insert("orange") -> index 1 is occupied, index 2 is occupied -> index 3.
-                    => open addresing handles collision by moving to the next available nodes, no extra nodes needed.
-                    => disadvantage: when delete, Eg: remove banana -> index 2 is empty.
-                        1: apple
-                        2:
-                        3: orange
-                        When look up for orange, traverse from index 1 - aplle -> move to index == "empty" -> return no "orange." => failed.
-                        So you will need to add a special Marker "DELETED" => more complex algorithms.
-                - Chaining: Linked List.
-                    0:
-                    1: apple (node) -> banana (node) -> orange (node)
-                    2:
-                    => Eg: remove "banana" => remove banana node, points apple.next to orange.
-2. About Hash Table:
-    - The Hash Table only contains the list of head nodes of linked lists, not their indexes.
-    - Each Hash tabl has a fixed size number of buckets (capacity) - which is normally power of 2.
-    - There is a need to rehash the hash table when the amount of key exceeds a certain threshold.
-        Eg: load_factor = keys/ capacity. 
-            1.000.000 keys / 1000 buckets -> load_factor = 1000 -> requires about 1000 nodes per look up -> slow.
-    - Data structure for keys in a hash table:
-        Entry {
-            HNode node;
-            std::string key;
-            std::string value;
-        }
-        HNode{
-            HNode* next; -> Pointer to next node, no data being stored here.
-            uint_64 hcode; -> the result of hash(key). eg: hash("name") = 892374982374 -> hcode = 892374982374. 
-        }
-        
-3. Reshash table challenges:
-    - initiate a table (with null pointers - as requirements of linked list) takes times with a big capacity.
-        Eg: 1.000.000 buckets, each bucket is a null pointer (8 bytes) -> 8.000.000 bytes = 8MB to write.
-    - moving all buckets from old table to a new table all at once is expensive and takes time.
-4. Solution:
-    - Manages 2 different tables (old and new)
-    - The rehash is triggered when inserting new node. if the size is greater or equal to a certain threshold -> rehash.
+Chapter 9: Serialization.
+So far, the response is a string, but some redis commands return different type of data, such as integers, list of strings, etc. So it is required to have serialization, which returns the flat, sequential stream of bytes.
+    - Simple Data type: string/ integet/ float/ boolean/ null.
+    - Complex Data type: array/ map/ struct.
+
+TAG-LENGTH-VALUE (TLV) serialization format:
+    - Eg: response = [123, "foo"]
+    -> TLV(response) =  [array  2   int     123     str     3       foo]
+                        [tag    len tag     value   tag     len   value]
+    
+    We Implement these data types:
+        enum {
+            TAG_NIL = 0,    // nil
+            TAG_ERR = 1,    // error code + msg
+            TAG_STR = 2,    // string
+            TAG_INT = 3,    // int64
+            TAG_DBL = 4,    // double
+            TAG_ARR = 5,    // array
+        };
+So, the response from server will be changed from:
+    [length][status][raw string data]
+to: 
+    [length][serialized body]
 
 main{
     Create ocketServer.
@@ -102,17 +76,109 @@ namespace {
     const std::size_t kMaxMessageSize = 4096;
     const size_t kHeaderSize = 4;
     const size_t kMaxArguments = 1024;
+
+    enum {
+        TAG_NIL = 0,
+        TAG_ERR = 1,
+        TAG_STR = 2,
+        TAG_INT = 3,
+        TAG_DBL = 4,
+        TAG_ARR = 5,
+    };
+    enum {
+        ERR_UNKNOWN = 1,
+        ERR_TOO_BIG = 2,
+    };
+
+    using Buffer = std::vector<uint8_t>;
+
+    void bufAppend(Buffer& buffer, const uint8_t* data, std::size_t length) {
+        buffer.insert(buffer.end(), data, data + length);
+    }
+
+    void bufAppendU8(Buffer& buffer, uint8_t value) {
+        buffer.push_back(value);
+    }
+
+    void bufAppendU32(Buffer& buffer, uint32_t value) {
+        bufAppend(buffer, reinterpret_cast<const uint8_t*>(&value), 4);
+    }
+
+    void bufAppendI64(Buffer& buffer, int64_t value) {
+        bufAppend(buffer, reinterpret_cast<const uint8_t*>(&value), 8);
+    }
+
+    void outNil(Buffer& out) {
+        bufAppendU8(out, TAG_NIL);
+    }
+
+    void outStr(Buffer& out, const char* data, std::size_t size) {
+        bufAppendU8(out, TAG_STR);
+        bufAppendU32(out, static_cast<uint32_t>(size));
+        bufAppend(out, reinterpret_cast<const uint8_t*>(data), size);
+    }
+
+    void outInt(Buffer& out, int64_t value) {
+        bufAppendU8(out, TAG_INT);
+        bufAppendI64(out, value);
+    }
+
+    void outArr(Buffer& out, uint32_t count) {
+        bufAppendU8(out, TAG_ARR);
+        bufAppendU32(out, count);
+    }
+
+    void outErr(Buffer& out, uint32_t code, const std::string& message) {
+        bufAppendU8(out, TAG_ERR);
+        bufAppendU32(out, code);
+        bufAppendU32(out, static_cast<uint32_t>(message.size()));
+        bufAppend(out, reinterpret_cast<const uint8_t*>(message.data()), message.size());
+    }
+    
+    void responseBegin(Buffer& out, std::size_t* headerPosition) {
+        *headerPosition = out.size();
+        bufAppendU32(out, 0);
+    }
+
+    std::size_t responseSize(Buffer& out, std::size_t headerPosition) {
+        return out.size() - headerPosition - kHeaderSize;
+    }
+
+    void responseEnd(Buffer& out, std::size_t headerPosition) {
+        std::size_t size = responseSize(out, headerPosition);
+
+        if (size > kMaxMessageSize) {
+            out.resize(headerPosition + kHeaderSize);
+            outErr(out, ERR_TOO_BIG, "response is too big");
+            size = responseSize(out, headerPosition);
+        }
+
+        const uint32_t encodedSize = static_cast<uint32_t>(size);
+        std::memcpy(&out[headerPosition], &encodedSize, kHeaderSize);
+    }
     
     #define container_of(ptr, T, member) \
         ((T*)((char*)(ptr) - offsetof(T, member)))
-
-    HMap gData; // Global KV data store.
 
     struct Entry {
         HNode node;
         std::string key;
         std::string value;
     };
+
+    bool cbKeys(HNode* node, void* arg) {
+        Buffer& out = *static_cast<Buffer*>(arg);
+        const Entry* entry = container_of(node, Entry, node);
+        outStr(out, entry->key.data(), entry->key.size());
+        return true;
+    }
+
+
+    HMap gData; // Global KV data store.
+
+
+
+    
     
     class Connection {
         public:
@@ -124,17 +190,6 @@ namespace {
             std::vector<uint8_t> incoming;
             std::vector<uint8_t> outgoing;
         };
-    
-        enum class ResponseStatus : uint32_t {
-        Ok = 0,
-        Error = 1,
-        NotFound = 2
-    };
-
-    struct Response {
-        ResponseStatus status{ResponseStatus::Ok};
-        std::vector<uint8_t> data;
-    };
     
     void setNonBlocking(int fd) {
         /* 
@@ -235,35 +290,6 @@ namespace {
         buffer.erase(buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(length));
     }
     
-    void makeResponse(const Response& response, std::vector<uint8_t>& output) {
-        const auto dataSize = static_cast<uint32_t>(response.data.size());
-        const uint32_t responseLength = kHeaderSize + dataSize;
-
-        const uint32_t encodedResponseLength = htonl(responseLength);
-        const uint32_t encodedStatus =
-            htonl(static_cast<uint32_t>(response.status));
-
-        appendBuffer(
-            output,
-            reinterpret_cast<const uint8_t*>(&encodedResponseLength),
-            kHeaderSize
-        );
-
-        appendBuffer(
-            output,
-            reinterpret_cast<const uint8_t*>(&encodedStatus),
-            kHeaderSize
-        );
-
-        if (!response.data.empty()) {
-            appendBuffer(
-                output,
-                response.data.data(),
-                response.data.size()
-            );
-        }
-    }
-    
     bool readUint32(const uint8_t*& cursor, const uint8_t* end, uint32_t& output) {
         if (cursor + kHeaderSize > end) {
             return false; // Not Enough Data, wait for the next read()
@@ -349,21 +375,23 @@ namespace {
         );
         return key;
     }
-    
-    void doRequest(std::vector<std::string>& command, Response& response) {
+
+    void doRequest(std::vector<std::string>& command, Buffer& out) {
+        if (command.size() == 1 && command[0] == "keys") {
+            outArr(out, static_cast<uint32_t>(hm_size(&gData)));
+            hm_foreach(&gData, cbKeys, &out);
+            return;
+        }
         if (command.size() == 2 && command[0] == "get") {
             Entry key = makeLookupKey(command[1]);
             HNode* node = hm_lookup(&gData, &key.node, entryEqual);
 
             if (!node) {
-                response.status = ResponseStatus::NotFound;
-                return;
+                return outNil(out);
             }
 
             const Entry* entry = container_of(node, Entry, node);
-            response.data.assign(entry->value.begin(), entry->value.end());
-            response.status = ResponseStatus::Ok;
-            return;
+            return outStr(out, entry->value.data(), entry->value.size());
         }
 
         if (command.size() == 3 && command[0] == "set") {
@@ -382,8 +410,7 @@ namespace {
                 hm_insert(&gData, &entry->node);
             }
 
-            response.status = ResponseStatus::Ok;
-            return;
+            return outNil(out);
         }
 
         if (command.size() == 2 && command[0] == "del") {
@@ -394,11 +421,14 @@ namespace {
                 delete container_of(node, Entry, node);
             }
 
-            response.status = ResponseStatus::Ok;
-            return;
+            return outInt(out, node ? 1 : 0);
+        }
+        
+        if (command.size() == 1 && command[0] == "dbsize") {
+            return outInt(out, static_cast<int64_t>(hm_size(&gData)));
         }
 
-        response.status = ResponseStatus::Error;
+        return outErr(out, ERR_UNKNOWN, "unknown command");
     }
     
     bool handleOneRequest(Connection& connection) {
@@ -450,11 +480,13 @@ namespace {
             return false;
         }
 
-        Response response;
+        std::size_t headerPosition = 0;
 
-        doRequest(command, response); // Execute business logic
+        responseBegin(connection.outgoing, &headerPosition);
 
-        makeResponse(response, connection.outgoing); // Generate response
+        doRequest(command, connection.outgoing);
+
+        responseEnd(connection.outgoing, headerPosition);
 
         consumeBuffer(connection.incoming, fullMessageSize); // remove the processed message from the buffer.
 

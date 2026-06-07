@@ -19,12 +19,134 @@ namespace {
     constexpr int kPort = 1234;
     constexpr std::size_t kMaxMessageSize = 32 << 20;
     constexpr std::size_t kHeaderSize = 4;
+    enum {
+        TAG_NIL = 0,
+        TAG_ERR = 1,
+        TAG_STR = 2,
+        TAG_INT = 3,
+        TAG_DBL = 4,
+        TAG_ARR = 5,
+    };
 
     enum class ResponseStatus : uint32_t {
         Ok = 0,
         Error = 1,
         NotFound = 2
     };
+
+    bool readU32(const uint8_t*& cursor, const uint8_t* end, uint32_t& value) {
+        if (cursor + 4 > end) {
+            return false;
+        }
+
+        std::memcpy(&value, cursor, 4);
+        cursor += 4;
+        return true;
+    }
+
+    bool readI64(const uint8_t*& cursor, const uint8_t* end, int64_t& value) {
+        if (cursor + 8 > end) {
+            return false;
+        }
+
+        std::memcpy(&value, cursor, 8);
+        cursor += 8;
+        return true;
+    }
+
+    bool printSerializedValue(const uint8_t*& cursor, const uint8_t* end) {
+        if (cursor >= end) {
+            return false;
+        }
+
+        const uint8_t tag = *cursor++;
+
+        switch (tag) {
+            case TAG_NIL:
+                std::cout << "(nil)";
+                return true;
+
+            case TAG_STR: {
+                uint32_t length = 0;
+                if (!readU32(cursor, end, length)) {
+                    return false;
+                }
+
+                if (cursor + length > end) {
+                    return false;
+                }
+
+                std::cout << '"'
+                        << std::string_view{
+                                reinterpret_cast<const char*>(cursor),
+                                length
+                            }
+                        << '"';
+
+                cursor += length;
+                return true;
+            }
+
+            case TAG_INT: {
+                int64_t value = 0;
+                if (!readI64(cursor, end, value)) {
+                    return false;
+                }
+
+                std::cout << value;
+                return true;
+            }
+
+            case TAG_ERR: {
+                uint32_t code = 0;
+                uint32_t length = 0;
+
+                if (!readU32(cursor, end, code)) {
+                    return false;
+                }
+
+                if (!readU32(cursor, end, length)) {
+                    return false;
+                }
+
+                if (cursor + length > end) {
+                    return false;
+                }
+
+                std::cout << "(err " << code << ") "
+                        << std::string_view{
+                                reinterpret_cast<const char*>(cursor),
+                                length
+                            };
+
+                cursor += length;
+                return true;
+            }
+
+            case TAG_ARR: {
+                uint32_t count = 0;
+                if (!readU32(cursor, end, count)) {
+                    return false;
+                }
+
+                std::cout << "[";
+                for (uint32_t i = 0; i < count; ++i) {
+                    if (i > 0) {
+                        std::cout << ", ";
+                    }
+
+                    if (!printSerializedValue(cursor, end)) {
+                        return false;
+                    }
+                }
+                std::cout << "]";
+                return true;
+            }
+
+            default:
+                return false;
+        }
+    }
 
     Socket createClientSocket() {
         Socket clientSocket{::socket(AF_INET, SOCK_STREAM, 0)};
@@ -142,8 +264,7 @@ namespace {
             kHeaderSize
         );
 
-        const uint32_t responseLength =
-            ntohl(encodedResponseLength);
+        const uint32_t responseLength = encodedResponseLength;
 
         if (responseLength > kMaxMessageSize) {
             logMessage("response too long");
@@ -163,31 +284,17 @@ namespace {
             return error;
         }
 
-        if (response.size() < kHeaderSize) {
-            logMessage("bad response");
+        const uint8_t* cursor = response.data();
+        const uint8_t* end = response.data() + response.size();
+
+        if (!printSerializedValue(cursor, end) ||
+            cursor != end)
+        {
+            logMessage("bad serialized response");
             return -1;
         }
 
-        uint32_t encodedStatus = 0;
-
-        std::memcpy(
-            &encodedStatus,
-            response.data(),
-            kHeaderSize
-        );
-
-        const auto status = static_cast<ResponseStatus>(
-            ntohl(encodedStatus)
-        );
-
-        const std::string_view data{
-            reinterpret_cast<const char*>(response.data() + kHeaderSize),
-            response.size() - kHeaderSize
-        };
-
-        std::cout << "status=" << static_cast<uint32_t>(status)
-                  << ", data=" << data
-                  << '\n';
+        std::cout << '\n';
 
         return 0;
     }
@@ -201,8 +308,13 @@ int main() {
     const std::vector<std::vector<std::string>> requests{
         {"set", "name", "dono"},
         {"get", "name"},
+        {"set", "age", "28"},
+        {"dbsize"},
+        {"keys"},
         {"del", "name"},
-        {"get", "name"}
+        {"get", "name"},
+        {"dbsize"},
+        {"keys"}
     };
 
     for (const auto& request : requests) {
