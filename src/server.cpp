@@ -77,64 +77,27 @@ namespace {
     const size_t kHeaderSize = 4;
     const size_t kMaxArguments = 1024;
 
-    enum {
-        TAG_NIL = 0,
-        TAG_ERR = 1,
-        TAG_STR = 2,
-        TAG_INT = 3,
-        TAG_DBL = 4,
-        TAG_ARR = 5,
+    #define container_of(ptr, T, member) \
+        ((T*)((char*)(ptr) - offsetof(T, member)))
+
+    struct Entry {
+        HNode node;
+        std::string key;
+        std::string value;
     };
-    enum {
-        ERR_UNKNOWN = 1,
-        ERR_TOO_BIG = 2,
-    };
-
-    using Buffer = std::vector<uint8_t>;
-
-    void bufAppend(Buffer& buffer, const uint8_t* data, std::size_t length) {
-        buffer.insert(buffer.end(), data, data + length);
-    }
-
-    void bufAppendU8(Buffer& buffer, uint8_t value) {
-        buffer.push_back(value);
-    }
-
-    void bufAppendU32(Buffer& buffer, uint32_t value) {
-        bufAppend(buffer, reinterpret_cast<const uint8_t*>(&value), 4);
-    }
-
-    void bufAppendI64(Buffer& buffer, int64_t value) {
-        bufAppend(buffer, reinterpret_cast<const uint8_t*>(&value), 8);
-    }
-
-    void outNil(Buffer& out) {
-        bufAppendU8(out, TAG_NIL);
-    }
-
-    void outStr(Buffer& out, const char* data, std::size_t size) {
-        bufAppendU8(out, TAG_STR);
-        bufAppendU32(out, static_cast<uint32_t>(size));
-        bufAppend(out, reinterpret_cast<const uint8_t*>(data), size);
-    }
-
-    void outInt(Buffer& out, int64_t value) {
-        bufAppendU8(out, TAG_INT);
-        bufAppendI64(out, value);
-    }
-
-    void outArr(Buffer& out, uint32_t count) {
-        bufAppendU8(out, TAG_ARR);
-        bufAppendU32(out, count);
-    }
-
-    void outErr(Buffer& out, uint32_t code, const std::string& message) {
-        bufAppendU8(out, TAG_ERR);
-        bufAppendU32(out, code);
-        bufAppendU32(out, static_cast<uint32_t>(message.size()));
-        bufAppend(out, reinterpret_cast<const uint8_t*>(message.data()), message.size());
-    }
+    HMap gData; // Global KV data store.
     
+    class Connection {
+        public:
+            explicit Connection(Socket socket) : socket{std::move(socket)} {}
+            Socket socket;
+            bool wantRead{true};
+            bool wantWrite{false};
+            bool wantClose{false};
+            std::vector<uint8_t> incoming;
+            std::vector<uint8_t> outgoing;
+        };
+
     void responseBegin(Buffer& out, std::size_t* headerPosition) {
         *headerPosition = out.size();
         bufAppendU32(out, 0);
@@ -156,15 +119,6 @@ namespace {
         const uint32_t encodedSize = static_cast<uint32_t>(size);
         std::memcpy(&out[headerPosition], &encodedSize, kHeaderSize);
     }
-    
-    #define container_of(ptr, T, member) \
-        ((T*)((char*)(ptr) - offsetof(T, member)))
-
-    struct Entry {
-        HNode node;
-        std::string key;
-        std::string value;
-    };
 
     bool cbKeys(HNode* node, void* arg) {
         Buffer& out = *static_cast<Buffer*>(arg);
@@ -172,24 +126,7 @@ namespace {
         outStr(out, entry->key.data(), entry->key.size());
         return true;
     }
-
-
-    HMap gData; // Global KV data store.
-
-
-
     
-    
-    class Connection {
-        public:
-            explicit Connection(Socket socket) : socket{std::move(socket)} {}
-            Socket socket;
-            bool wantRead{true};
-            bool wantWrite{false};
-            bool wantClose{false};
-            std::vector<uint8_t> incoming;
-            std::vector<uint8_t> outgoing;
-        };
     
     void setNonBlocking(int fd) {
         /* 
